@@ -21,7 +21,7 @@ builder.Services.AddScoped<IPaymentService, PaymentService>();
 
 // Payment boundary = HTTP (satisfies "HTTP Client for inter-service communication").
 builder.Services.AddHttpClient<IPaymentApiClient, PaymentApiClient>(c =>
-    c.BaseAddress = new Uri(builder.Configuration["Payment:BaseUrl"] ?? "http://localhost:5114"));
+    c.BaseAddress = new Uri(builder.Configuration["Payment:BaseUrl"]));
 
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<ApiExceptionHandler>();
