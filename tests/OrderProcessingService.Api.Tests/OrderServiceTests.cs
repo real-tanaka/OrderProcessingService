@@ -9,9 +9,11 @@ namespace OrderProcessingService.Api.Tests;
 public class OrderServiceTests
 {
     // Hand-written fake for the HTTP payment boundary: force a result or a failure without a real service.
-    private sealed class FakePaymentApiClient : IPaymentApiClient
+    internal sealed class FakePaymentApiClient : IPaymentApiClient
     {
         private readonly PaymentStatus _status;
+        private int _callCount;
+        public int CallCount => _callCount;
         public bool ThrowHttpException { get; set; }
         public Exception? ExceptionToThrow { get; set; }
         public ProcessPaymentRequest? LastRequest { get; private set; }
@@ -19,6 +21,7 @@ public class OrderServiceTests
 
         public Task<PaymentResponse> ProcessPaymentAsync(ProcessPaymentRequest request, CancellationToken ct)
         {
+            Interlocked.Increment(ref _callCount);
             LastRequest = request;
             if (ExceptionToThrow is not null) throw ExceptionToThrow;
             if (ThrowHttpException) throw new HttpRequestException("payment service unreachable");
@@ -51,7 +54,7 @@ public class OrderServiceTests
     {
         var (db, inventory, payment) = Build();
         var service = CreateService(db, inventory, payment);
-        var result = await service.CreateOrderAsync(Request(("PROD-001", 2, 30.00m)), CancellationToken.None);
+        var result = (await service.CreateOrderAsync(Request(("PROD-001", 2, 30.00m)), "key-1", CancellationToken.None)).Order;
 
         Assert.Equal(OrderStatus.Confirmed, result.Status);
         Assert.Equal(60.00m, result.TotalAmount);
@@ -69,7 +72,7 @@ public class OrderServiceTests
         var service = CreateService(db, inventory, failing);
 
         await Assert.ThrowsAsync<PaymentProcessingException>(
-            () => service.CreateOrderAsync(Request(("PROD-001", 2, 30.00m)), CancellationToken.None));
+            () => service.CreateOrderAsync(Request(("PROD-001", 2, 30.00m)), "key-1", CancellationToken.None));
 
         var item = await db.InventoryItems.FindAsync("PROD-001");
         Assert.Equal(100, item!.AvailableQuantity);   // released back
@@ -85,7 +88,7 @@ public class OrderServiceTests
         var service = CreateService(db, inventory, payment);
 
         await Assert.ThrowsAsync<InsufficientInventoryException>(
-            () => service.CreateOrderAsync(Request(("PROD-002", 1, 10.00m)), CancellationToken.None));
+            () => service.CreateOrderAsync(Request(("PROD-002", 1, 10.00m)), "key-1", CancellationToken.None));
 
         var item = await db.InventoryItems.FindAsync("PROD-002");
         Assert.Equal(0, item!.AvailableQuantity);
@@ -100,7 +103,7 @@ public class OrderServiceTests
         var service = CreateService(db, inventory, payment);
 
         await Assert.ThrowsAsync<InsufficientInventoryException>(
-            () => service.CreateOrderAsync(Request(("PROD-001", 2, 30.00m), ("PROD-002", 1, 10.00m)), CancellationToken.None));
+            () => service.CreateOrderAsync(Request(("PROD-001", 2, 30.00m), ("PROD-002", 1, 10.00m)), "key-1", CancellationToken.None));
 
         var first = await db.InventoryItems.FindAsync("PROD-001");
         Assert.Equal(100, first!.AvailableQuantity);   // first line released back
@@ -115,7 +118,7 @@ public class OrderServiceTests
         var service = CreateService(db, inventory, payment);
 
         await Assert.ThrowsAsync<PaymentServiceUnavailableException>(
-            () => service.CreateOrderAsync(Request(("PROD-001", 1, 10.00m)), CancellationToken.None));
+            () => service.CreateOrderAsync(Request(("PROD-001", 1, 10.00m)), "key-1", CancellationToken.None));
 
         var item = await db.InventoryItems.FindAsync("PROD-001");
         Assert.Equal(100, item!.AvailableQuantity);
@@ -130,7 +133,7 @@ public class OrderServiceTests
         var service = CreateService(db, inventory, payment);
 
         await Assert.ThrowsAsync<ProductNotFoundException>(
-            () => service.CreateOrderAsync(Request(("PROD-001", 2, 30.00m), ("PROD-404", 1, 10.00m)), CancellationToken.None));
+            () => service.CreateOrderAsync(Request(("PROD-001", 2, 30.00m), ("PROD-404", 1, 10.00m)), "key-1", CancellationToken.None));
 
         var first = await db.InventoryItems.FindAsync("PROD-001");
         Assert.Equal(100, first!.AvailableQuantity);
@@ -147,12 +150,13 @@ public class OrderServiceTests
         var service = CreateService(db, inventory, payment);
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => service.CreateOrderAsync(Request(("PROD-001", 2, 30.00m)), CancellationToken.None));
+            () => service.CreateOrderAsync(Request(("PROD-001", 2, 30.00m)), "key-1", CancellationToken.None));
 
         var item = await db.InventoryItems.FindAsync("PROD-001");
         Assert.Equal(100, item!.AvailableQuantity);
         Assert.Equal(0, item.ReservedQuantity);
         var order = await db.Orders.SingleAsync();
         Assert.Equal(OrderStatus.Cancelled, order.Status);
+        Assert.Empty(await db.IdempotencyRecords.ToListAsync());   // unexpected failure frees the key
     }
 }

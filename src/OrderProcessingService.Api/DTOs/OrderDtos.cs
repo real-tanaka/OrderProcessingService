@@ -40,5 +40,8 @@ public sealed record OrderResponse(
     Guid Id, string CustomerId, IReadOnlyList<OrderItemResponse> Items,
     decimal TotalAmount, OrderStatus Status, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
 
+/// <summary>Outcome of a create-order call; <see cref="Replayed"/> is true when it came from a stored idempotent result.</summary>
+public sealed record CreateOrderResult(OrderResponse Order, bool Replayed);
+
 /// <summary>A paginated set of orders.</summary>
 public sealed record OrderListResponse(IReadOnlyList<OrderResponse> Items, int TotalCount, int Page, int PageSize);

@@ -12,10 +12,13 @@ public class OrdersController : ControllerBase
     public OrdersController(IOrderService orderService) => _orderService = orderService;
 
     [HttpPost]
-    public async Task<ActionResult<OrderResponse>> Create(CreateOrderRequest request, CancellationToken ct)
+    public async Task<ActionResult<OrderResponse>> Create(
+        CreateOrderRequest request, [FromHeader(Name = IdempotencyKeys.HeaderName)] string? idempotencyKey, CancellationToken ct)
     {
-        var order = await _orderService.CreateOrderAsync(request, ct);
-        return CreatedAtAction(nameof(GetById), new { id = order.Id }, order);
+        IdempotencyKeys.Validate(idempotencyKey);   // ArgumentException -> 400 via ApiExceptionHandler
+        var result = await _orderService.CreateOrderAsync(request, idempotencyKey!, ct);
+        if (result.Replayed) Response.Headers["Idempotent-Replayed"] = "true";
+        return CreatedAtAction(nameof(GetById), new { id = result.Order.Id }, result.Order);
     }
 
     [HttpGet("{id:guid}")]

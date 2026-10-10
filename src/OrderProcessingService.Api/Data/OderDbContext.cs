@@ -12,8 +12,20 @@ public class OrderDbContext : DbContext
     public DbSet<InventoryItem> InventoryItems => Set<InventoryItem>();
     public DbSet<PaymentTransaction> PaymentTransactions => Set<PaymentTransaction>();
 
+    public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<IdempotencyRecord>(entity =>
+        {
+            entity.HasKey(e => new { e.CustomerId, e.Key });
+            entity.Property(e => e.CustomerId).HasMaxLength(100);
+            entity.Property(e => e.Key).HasMaxLength(200);
+            entity.Property(e => e.RequestHash).HasMaxLength(64).IsRequired();
+            entity.Property(e => e.State).HasConversion<string>().HasMaxLength(20);
+            entity.Property(e => e.FailureKind).HasMaxLength(50);
+        });
+
         modelBuilder.Entity<Order>(entity =>
         {
             entity.HasKey(e => e.Id);
