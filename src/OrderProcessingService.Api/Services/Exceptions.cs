@@ -19,6 +19,16 @@ public sealed class PaymentProcessingException : Exception
     public PaymentProcessingException(string message) : base(message) { }
 }
 
+public sealed class IdempotencyKeyReuseException : Exception
+{
+    public IdempotencyKeyReuseException() : base("Idempotency-Key was already used with a different request body.") { }
+}
+
+public sealed class RequestInProgressException : Exception
+{
+    public RequestInProgressException() : base("A request with this Idempotency-Key is still in progress.") { }
+}
+
 public sealed class PaymentServiceUnavailableException : Exception
 {
     public PaymentServiceUnavailableException(string message) : base(message) { }

@@ -12,6 +12,8 @@ Running log of features and planned work. Update it as part of each change: move
 - Saga compensates on any exception (no leaked stock), including request cancellation
 - Unit tests: `InventoryServiceTests`, `OrderServiceTests` (happy path, payment declined, partial reserve, insufficient stock, payment unreachable), `PaymentApiClientTests`
 
+- `Idempotency-Key` on `POST /api/orders`: per-customer records, replay of success and expected failures, 422 on key reuse with a different body, 409 while in progress — `Models/IdempotencyRecord.cs`, `Services/OrderService.cs`, `Services/IdempotencyKeys.cs`
+
 ## In progress
 
 _Nothing yet._
@@ -27,9 +29,12 @@ Candidates, roughly by value (from known gaps; confirm priorities with the user)
 - [ ] Refund/void when persisting the order fails after a successful charge
 - [ ] Integration tests with `WebApplicationFactory` (controllers, status codes, ProblemDetails)
 - [ ] Real persistence (replace the in-memory provider) and migrations
+- [ ] Sweeper for stale `InProgress` idempotency records (needs persist-Pending-first so a crash mid-saga can be resumed or compensated)
+- [ ] Revisit replayed 503 once payment-ambiguity handling exists: a stored `PaymentServiceUnavailable` is replayed as final, but the charge may actually have gone through
 - [ ] Rename `Data/OderDbContext.cs` → `OrderDbContext.cs`
 
 ## Log
 
 - 2026-10-10 — Added `AGENTS.md`/`CLAUDE.md` and this file after a codebase review. No code changes. .NET SDK was unavailable in the session, so tests were not run.
+- 2026-10-10 — Added `Idempotency-Key` support to `POST /api/orders` (insert-first `IdempotencyRecord`, replay, 422/409 conflicts, `CreateOrderAsync` now takes the key and returns `CreateOrderResult`). EF InMemory enforces PK uniqueness across contexts (throws `ArgumentException`), so concurrency tests run on InMemory. `dotnet test` green (31 tests).
 - 2026-10-10 — Fixed leaked stock: `OrderService.CreateOrderAsync` now compensates on any exception via `CancelAsync`; added tests for unknown product on a later line and an unexpected payment exception. Not run locally (no .NET SDK in the session; install is blocked by the proxy) — verify with `dotnet test`.

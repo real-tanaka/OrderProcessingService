@@ -25,7 +25,7 @@ I track what actually got reserved rather than just "reserve it all" because of 
 
 | Method | Route | What it does |
 |---|---|---|
-| POST | `/api/orders` | create an order (runs the saga) |
+| POST | `/api/orders` | create an order (runs the saga); requires an `Idempotency-Key` header |
 | GET | `/api/orders/{id}` | get a single order |
 | GET | `/api/orders?page=&pageSize=` | list orders, paged |
 | PUT | `/api/orders/{id}/status` | change the status |
@@ -38,6 +38,17 @@ I track what actually got reserved rather than just "reserve it all" because of 
 Errors come back as `400` for bad input, `404` for a missing product, `409` for something conflicting with the current state (no stock, or a payment that processed but failed), `503` if the payment service is unreachable, and `201` + a `Location` header on create.
 
 I keep `409` and `503` separate because a payment that was attempted and declined is a different problem from a payment service that just can't be reached — one is on the customer, the other is on infrastructure.
+
+## Idempotency
+
+`POST /api/orders` requires an `Idempotency-Key` header (1–200 characters, otherwise `400`). The key is scoped per customer. The first request with a key records it (before doing any work) and runs the saga; a retry replays the original outcome instead of reserving stock or charging again.
+
+- Same key, same body, finished: the stored result is replayed — `201` with the same body and `Location` plus an `Idempotent-Replayed: true` header. A stored failure replays with the same status as the original (`404`, `409`, `503`).
+- Same key, different body: `422`.
+- Same key while the first request is still running: `409` with `Retry-After: 1`.
+- An unexpected error (anything other than the expected 404/409/503 outcomes) releases the key so the client can retry.
+
+"Same body" means the same customer and items, regardless of item order.
 
 ## Tests
 

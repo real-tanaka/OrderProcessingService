@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using OrderProcessingService.Api.Data;
 using OrderProcessingService.Api.DTOs;
@@ -16,11 +18,104 @@ public sealed class OrderService : IOrderService
         _db = db; _inventory = inventory; _paymentApi = paymentApi;
     }
 
-    public async Task<OrderResponse> CreateOrderAsync(CreateOrderRequest request, CancellationToken ct)
+    private static readonly JsonSerializerOptions BodyJson = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
+    };
+
+    private const string FailureProductNotFound = "ProductNotFound";
+    private const string FailureInsufficientInventory = "InsufficientInventory";
+    private const string FailurePaymentProcessing = "PaymentProcessing";
+    private const string FailurePaymentUnavailable = "PaymentServiceUnavailable";
+
+    public async Task<CreateOrderResult> CreateOrderAsync(CreateOrderRequest request, string idempotencyKey, CancellationToken ct)
+    {
+        IdempotencyKeys.Validate(idempotencyKey);
+        var hash = IdempotencyKeys.Fingerprint(request);
+
+        // The primary key (CustomerId, Key) is the lock: insert first, branch on duplicate. Never check-then-insert.
+        var record = new IdempotencyRecord
+        {
+            CustomerId = request.CustomerId, Key = idempotencyKey, RequestHash = hash,
+            State = IdempotencyState.InProgress, OrderId = Guid.NewGuid(),
+        };
+        _db.IdempotencyRecords.Add(record);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Duplicate-key errors differ by provider (DbUpdateException, or other types from InMemory): detach our
+            // failed insert and confirm by loading the winner's row. No row => not a duplicate, so rethrow.
+            _db.Entry(record).State = EntityState.Detached;
+            var existing = await _db.IdempotencyRecords.AsNoTracking()
+                .FirstOrDefaultAsync(r => r.CustomerId == request.CustomerId && r.Key == idempotencyKey, ct);
+            if (existing is null) throw;
+            return Replay(existing, hash);
+        }
+
+        // Known gap: a crash after this point (before the record is completed or removed) leaves it InProgress
+        // forever, so retries get 409. Fixing needs persist-Pending-first + a sweeper (see PROGRESS.md backlog).
+        try
+        {
+            var response = await RunSagaAsync(request, record.OrderId, ct);
+            record.State = IdempotencyState.Completed;
+            record.StatusCode = StatusCodes.Status201Created;
+            record.ResponseBody = JsonSerializer.Serialize(response, BodyJson);
+            await _db.SaveChangesAsync(CancellationToken.None);
+            return new CreateOrderResult(response, false);
+        }
+        catch (Exception ex) when (FailureKindOf(ex) is not null)
+        {
+            record.State = IdempotencyState.Completed;
+            record.FailureKind = FailureKindOf(ex);
+            await _db.SaveChangesAsync(CancellationToken.None);
+            throw;
+        }
+        catch
+        {
+            // Unexpected failure: free the key so the client may retry.
+            _db.IdempotencyRecords.Remove(record);
+            await _db.SaveChangesAsync(CancellationToken.None);
+            throw;
+        }
+    }
+
+    private static CreateOrderResult Replay(IdempotencyRecord existing, string hash)
+    {
+        if (existing.RequestHash != hash) throw new IdempotencyKeyReuseException();
+        if (existing.State == IdempotencyState.InProgress) throw new RequestInProgressException();
+
+        if (existing.FailureKind is null)
+            return new CreateOrderResult(JsonSerializer.Deserialize<OrderResponse>(existing.ResponseBody!, BodyJson)!, true);
+
+        // Rethrow the domain exception so ApiExceptionHandler stays the only place that maps status codes.
+        throw existing.FailureKind switch
+        {
+            FailureProductNotFound => new ProductNotFoundException("(replayed)"),
+            FailureInsufficientInventory => new InsufficientInventoryException("(replayed)", 0, 0),
+            FailurePaymentProcessing => new PaymentProcessingException("Replayed: payment processing failed."),
+            FailurePaymentUnavailable => new PaymentServiceUnavailableException("Replayed: payment service unreachable."),
+            _ => new InvalidOperationException($"Unknown stored failure kind '{existing.FailureKind}'."),
+        };
+    }
+
+    private static string? FailureKindOf(Exception ex) => ex switch
+    {
+        ProductNotFoundException => FailureProductNotFound,
+        InsufficientInventoryException => FailureInsufficientInventory,
+        PaymentProcessingException => FailurePaymentProcessing,
+        PaymentServiceUnavailableException => FailurePaymentUnavailable,
+        _ => null,
+    };
+
+    private async Task<OrderResponse> RunSagaAsync(CreateOrderRequest request, Guid orderId, CancellationToken ct)
     {
         // No catalog price in this model, so accept client unitPrice but totalAmount server-side.
         var order = new Order
         {
+            Id = orderId,
             CustomerId = request.CustomerId,
             TotalAmount = request.Items.Sum(i => i.Quantity * i.UnitPrice),
             Status = OrderStatus.Pending,

@@ -1,6 +1,27 @@
 @OrderProcessingService.Api_HostAddress = http://localhost:5086
 
-GET {{OrderProcessingService.Api_HostAddress}}/weatherforecast/
-Accept: application/json
+### Create an order. Idempotency-Key is required; repeat the same key + body to get the original outcome replayed
+### (response header Idempotent-Replayed: true). Same key with a different body -> 422; still running -> 409.
+POST {{OrderProcessingService.Api_HostAddress}}/api/orders
+Content-Type: application/json
+Idempotency-Key: 7d1f6c52-3f0a-4a53-9c1e-0d6a1f2b9a10
+
+{
+  "customerId": "customer-1",
+  "items": [
+    { "productId": "PROD-001", "quantity": 2, "unitPrice": 30.00 }
+  ]
+}
+
+### Missing Idempotency-Key -> 400
+POST {{OrderProcessingService.Api_HostAddress}}/api/orders
+Content-Type: application/json
+
+{
+  "customerId": "customer-1",
+  "items": [
+    { "productId": "PROD-001", "quantity": 1, "unitPrice": 10.00 }
+  ]
+}
 
 ###
