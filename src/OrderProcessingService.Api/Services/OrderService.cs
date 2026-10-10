@@ -30,6 +30,7 @@ public sealed class OrderService : IOrderService
 
         var reserved = new List<OrderItem>();   // exactly what got reserved → exact compensation
 
+        PaymentResponse payment;
         try
         {
             foreach (var item in order.Items)
@@ -38,36 +39,35 @@ public sealed class OrderService : IOrderService
                 reserved.Add(item);
             }
 
-            var payment = await _paymentApi.ProcessPaymentAsync(
+            payment = await _paymentApi.ProcessPaymentAsync(
                 new ProcessPaymentRequest { OrderId = order.Id.ToString(), Amount = order.TotalAmount }, ct);
-
-            if (payment.Status != PaymentStatus.Completed)      // payment FAILED
-            {
-                await ReleaseAsync(reserved, ct);
-                order.Status = OrderStatus.Cancelled;
-                await SaveAsync(order, ct);
-                throw new PaymentProcessingException("Payment processing failed; order cancelled and inventory released.");
-            }
-
-            order.Status = OrderStatus.Confirmed;
         }
-        catch (InsufficientInventoryException)
+        catch (Exception ex)
         {
-            await ReleaseAsync(reserved, ct);
-            order.Status = OrderStatus.Cancelled;
-            await SaveAsync(order, ct);
+            // Any failure (expected or not) must undo exactly what was reserved, or stock leaks.
+            await CancelAsync(order, reserved);
+            if (ex is HttpRequestException or PaymentServiceUnavailableException)   // payment UNREACHABLE
+                throw new PaymentServiceUnavailableException("Payment service unreachable; order cancelled and inventory released.");
             throw;
         }
-        catch (Exception ex) when (ex is HttpRequestException or PaymentServiceUnavailableException)   // payment UNREACHABLE
+
+        if (payment.Status != PaymentStatus.Completed)      // payment FAILED
         {
-            await ReleaseAsync(reserved, ct);
-            order.Status = OrderStatus.Cancelled;
-            await SaveAsync(order, ct);
-            throw new PaymentServiceUnavailableException("Payment service unreachable; order cancelled and inventory released.");
+            await CancelAsync(order, reserved);
+            throw new PaymentProcessingException("Payment processing failed; order cancelled and inventory released.");
         }
 
+        order.Status = OrderStatus.Confirmed;
         await SaveAsync(order, ct);
         return Map(order);
+    }
+
+    // Compensation ignores the request's token: if the caller cancelled, we must still undo the reservations.
+    private async Task CancelAsync(Order order, IEnumerable<OrderItem> reserved)
+    {
+        await ReleaseAsync(reserved, CancellationToken.None);
+        order.Status = OrderStatus.Cancelled;
+        await SaveAsync(order, CancellationToken.None);
     }
 
     private async Task ReleaseAsync(IEnumerable<OrderItem> items, CancellationToken ct)
