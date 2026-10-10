@@ -25,6 +25,21 @@ ASP.NET Core controllers → services → EF Core `OrderDbContext` (in-memory pr
 
 **Error mapping is centralized** in `Middleware/ApiExceptionHandler` (`IExceptionHandler` + ProblemDetails): `ProductNotFoundException`→404, `InsufficientInventoryException` and `PaymentProcessingException`→409, `PaymentServiceUnavailableException`→503, `ArgumentException`→400. Services throw domain exceptions (`Services/Exceptions.cs`); controllers generally don't catch. 409 (payment declined) vs 503 (payment unreachable) is a deliberate distinction.
 
+## Details worth knowing before building on this
+
+- **Domain model:** `Order` (1..n `OrderItem`, FK shadow property `OrderId`), `InventoryItem` (key `ProductId`; `AvailableQuantity` + `ReservedQuantity`), `PaymentTransaction`. Enums (`OrderStatus`: Pending/Confirmed/Cancelled/Shipped, `PaymentStatus`: Pending/Completed/Failed) are stored as strings and serialized camelCase.
+- **Order persistence:** the order is only added to the DbContext and saved at the end of the saga (confirmed or cancelled); nothing is persisted mid-flow. `Order.Id` is generated at construction and sent to the payment service as `OrderId`.
+- **Payment idempotency:** `PaymentService.ProcessPaymentAsync` returns the existing transaction if one exists for the same `OrderId`.
+- **Validation** is DataAnnotations on DTOs in `DTOs/` (`[ApiController]` returns 400 automatically). `ApiExceptionHandler` returns generic ProblemDetails (title only, not the exception message).
+- **Conventions:** services are registered scoped in `Program.cs` behind `I*Service` interfaces; every async method takes a `CancellationToken`; DTOs are records.
+- **Known gaps in the saga/services** (don't assume they are handled): only `InsufficientInventoryException`, `HttpRequestException` and `PaymentServiceUnavailableException` trigger compensation, so e.g. `ProductNotFoundException` on a later line leaves earlier lines reserved and the order unsaved; `UpdateOrderStatusAsync` accepts any status with no transition rules and does not release stock; `InventoryService.ReleaseAsync` does not cap quantity at what was reserved; a failure saving after a successful charge is not refunded.
+- **Environment:** the .NET SDK was not installed in the cloud session where this was written, so the build/tests had not been run there; check `dotnet --version` before relying on them.
+
+## Working agreements
+
+- `PROGRESS.md` tracks features and the backlog. Update it when you start, finish, or discover work (move items between sections, add a dated entry to the log).
+- Keep this file current when architecture or conventions change.
+
 Known simplifications (see README): no concurrency control on inventory (overselling possible), unit price is client-supplied, total is computed server-side.
 
 ## Tests
