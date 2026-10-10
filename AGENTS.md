@@ -17,7 +17,7 @@ No linter or formatter is configured.
 
 ASP.NET Core controllers → services → EF Core `OrderDbContext` (in-memory provider, seeded by `DbInitializer` at startup; `PROD-004` intentionally has zero stock).
 
-**Order creation is a saga** (`Services/OrderService.CreateOrderAsync`): reserve stock per line → charge payment → mark `Confirmed`. On any failure it compensates by releasing *only* the lines actually reserved (tracked in the local `reserved` list, never the full order), then saves the order as `Cancelled` and rethrows. Preserve that exact-compensation behavior when changing the flow.
+**Order creation is a saga** (`Services/OrderService.CreateOrderAsync`): reserve stock per line → charge payment → mark `Confirmed`. On any failure it compensates by releasing *only* the lines actually reserved (tracked in the local `reserved` list, never the full order), then saves the order as `Cancelled` and rethrows. This happens for *any* exception during reserve/payment (not just the expected ones), and compensation uses `CancellationToken.None` so a cancelled request still releases stock. Preserve that exact-compensation behavior when changing the flow.
 
 **The payment service is the same app, called over HTTP.** `PaymentApiClient` (typed `HttpClient`, base URL from `Payment:BaseUrl` in `appsettings.json`, which must match the launch-settings port) posts to this API's own `/api/payments/process`. Consequences:
 - Client and server JSON must agree: enums are camelCase strings (`JsonStringEnumConverter(JsonNamingPolicy.CamelCase)` is configured both in `Program.cs` and in `PaymentApiClient`). Change one, change both.
@@ -32,7 +32,7 @@ ASP.NET Core controllers → services → EF Core `OrderDbContext` (in-memory pr
 - **Payment idempotency:** `PaymentService.ProcessPaymentAsync` returns the existing transaction if one exists for the same `OrderId`.
 - **Validation** is DataAnnotations on DTOs in `DTOs/` (`[ApiController]` returns 400 automatically). `ApiExceptionHandler` returns generic ProblemDetails (title only, not the exception message).
 - **Conventions:** services are registered scoped in `Program.cs` behind `I*Service` interfaces; every async method takes a `CancellationToken`; DTOs are records.
-- **Known gaps in the saga/services** (don't assume they are handled): only `InsufficientInventoryException`, `HttpRequestException` and `PaymentServiceUnavailableException` trigger compensation, so e.g. `ProductNotFoundException` on a later line leaves earlier lines reserved and the order unsaved; `UpdateOrderStatusAsync` accepts any status with no transition rules and does not release stock; `InventoryService.ReleaseAsync` does not cap quantity at what was reserved; a failure saving after a successful charge is not refunded.
+- **Known gaps in the saga/services** (don't assume they are handled): `UpdateOrderStatusAsync` accepts any status with no transition rules and does not release stock; `InventoryService.ReleaseAsync` does not cap quantity at what was reserved; a failure saving after a successful charge is not refunded.
 - **Environment:** the .NET SDK was not installed in the cloud session where this was written, so the build/tests had not been run there; check `dotnet --version` before relying on them.
 
 ## Working agreements
